@@ -1,0 +1,211 @@
+image:
+  name: alpine-romm
+  distribution: alpine
+  release: 3.19
+  architecture: x86_64
+  description: "Minimal secure Alpine image with romm and build toolchain"
+  variant:
+
+
+source:
+  downloader: alpinelinux-http
+  url: https://dl-cdn.alpinelinux.org/alpine
+  keys:
+    - 0482D84022F52DF1C4E7CD43293ACD0907D9495A
+  keyserver: keyserver.ubuntu.com
+
+
+targets:
+  lxc:
+    config:
+      - type: all
+        content: "lxc.apparmor.profile=unconfined"
+      - type: all
+        content: "lxc.cap.drop=mac_admin mac_override sys_time sys_module"
+      - type: all
+        content: "lxc.net.0.flags=up"
+
+
+packages:
+  manager: apk
+  update: true
+  cleanup: true
+  sets:
+    - packages:
+        - git
+        - make
+        - gcc
+        - g++
+        - mariadb-dev
+        - mariadb-connector-c
+        - postgresql-dev
+        - libffi-dev
+        - musl-dev
+        - curl
+        - ca-certificates
+        - file-dev
+        - p7zip
+        - tzdata
+        - bzip2-dev
+        - openssl-dev
+        - readline-dev
+        - sqlite-dev
+        - zlib-dev
+        - xz-dev
+        - ncurses-dev
+        - bash
+        - openssl
+        - openrc
+      action: install
+
+files:
+  - generator: dump
+    path: /etc/network/interfaces
+    content: |
+      auto lo
+      iface lo inet loopback
+
+      auto eth0
+      iface eth0 inet dhcp
+  - generator: dump
+    path: /etc/passwd
+    content: |
+      root:x:0:0:root:/root:/bin/bash
+      user:x:1000:1000:User:/home/user:/bin/bash
+  - generator: dump
+    path: /etc/profile.d/romm_env.sh
+    content: |
+      export PATH="/app/.venv/bin:$PATH"
+      export NVM_DIR="$HOME/.nvm"
+      if [ -s "$NVM_DIR/nvm.sh" ]; then
+         . "$NVM_DIR/nvm.sh"
+      fi
+
+
+actions:
+    # Fase 1 : Download and place Romm 
+  - trigger: post-packages
+    action: |-
+       #!/bin/bash
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Downloadeing + Placing Romm        #"
+       echo "#                                               #"
+       echo "#################################################"
+       git clone https://github.com/rommapp/romm.git /app/romm
+       cp -r /app/romm/frontend /app/
+       cp -r /app/romm/backend  /app/
+       cp /app/romm/pyproject.toml /app
+       cp /app/romm/uv.lock* /app
+       cp /app/romm/.python-version /app
+
+    # Fase 2 : Download and compile RAHasher
+  - trigger: post-packages
+    action: |-
+       #!/bin/bash
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Downloading and compile RAHash     #"
+       echo "#                                               #"
+       echo "#################################################"
+       git clone --recursive --branch 1.8.1 --depth 1 https://github.com/RetroAchievements/RALibretro.git /tmp/RALibretro
+       sed -i '22a #include <ctime>' /tmp/RALibretro/src/Util.h
+       sed -i '6a #include <unistd.h>' \
+          /tmp/RALibretro/src/libchdr/deps/zlib-1.3.1/gzlib.c \
+          /tmp/RALibretro/src/libchdr/deps/zlib-1.3.1/gzread.c \
+          /tmp/RALibretro/src/libchdr/deps/zlib-1.3.1/gzwrite.c
+       make -C /tmp/RALibretro HAVE_CHD=1 -f ./Makefile.RAHasher
+       cp /tmp/RALibretro/bin64/RAHasher /usr/bin/RAHasher
+       rm -rf /tmp/RALibretro
+
+    # Fase 3 : Download and install Python + NVM
+  - trigger: post-packages
+    action: |-
+       #!/bin/bash
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Downloadeing + install Python      #"
+       echo "#                                               #"
+       echo "#################################################"
+
+       export PATH="/root/.local/bin:$PATH"
+       export NVM_DIR="/root/.nvm"
+       export NVM_NODEJS_ORG_MIRROR="https://unofficial-builds.nodejs.org/download/release/"
+       export PATH="$NVM_DIR/versions/node/v18.20.8/bin:/root/.local/bin:$PATH"
+
+       curl -L https://github.com/astral-sh/uv/releases/download/0.7.19/uv-x86_64-unknown-linux-musl.tar.gz \
+       | tar -xz --strip-components=1 -C /usr/local/bin
+       uv python install 3.13
+
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Downloadeing + Placing NVM         #"
+       echo "#                                               #"
+       echo "#################################################"
+
+       curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash
+       if [ -s "$NVM_DIR/nvm.sh" ]; then
+         . "$NVM_DIR/nvm.sh"
+       fi
+
+       nvm install 18.20.8
+       nvm use 18.20.8
+       nvm alias default 18.20.8
+
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Installing Frontend                #"
+       echo "#                                               #"
+       echo "#################################################"
+
+       cd /app/frontend
+       npm install
+
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Installing Backend                 #"
+       echo "#                                               #"
+       echo "#################################################"
+
+       cd /app
+       uv sync --all-extras
+
+  - trigger: post-packages
+    action: |-
+       #!/bin/bash
+       echo "#################################################"
+       echo "#                                               #"
+       echo "#            Cleanup                            #"
+       echo "#                                               #"
+       echo "#################################################"
+
+       rm -rf /var/cache/apk/*
+       rm -rf /usr/share/man/*
+       rm -rf /usr/share/doc/*
+       rm -rf /usr/share/locale/*
+
+environment:
+  clear_defaults: 
+  variables:
+    - key: NVM_DIR
+      value: "/root/.nvm"
+    - key: PATH
+      value: "$NVM_DIR/versions/node/v18.20.8/bin:/app/.venv/bin:/root/.local/bin:${PATH}"
+    - key: ROMM_AUTH_SECRET_KEY
+      value: "<openssl rand -hex 32>"
+    - key: RQ_REDIS_HOST
+      value: "${REDIS_HOST:-127.0.0.1}"
+    - key: RQ_REDIS_PORT
+      value: "${REDIS_PORT:-6379}"
+    - key: RQ_REDIS_USERNAME
+      value: "${REDIS_USERNAME:-''}"
+    - key: RQ_REDIS_PASSWORD
+      value: "${REDIS_PASSWORD:-''}"
+    - key: RQ_REDIS_DB
+      value: "${REDIS_DB:-0}"
+    - key: RQ_REDIS_SSL
+      value: "${REDIS_SSL:-0}"
+    - key: PYTHONPATH
+      value: "/app/backend:${PYTHONPATH-}"
+
+
